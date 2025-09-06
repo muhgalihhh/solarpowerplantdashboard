@@ -13,6 +13,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# (Baru) Altair untuk line chart dengan warna konsisten
+try:
+    import altair as alt
+    ALTAIR_OK = True
+except Exception:
+    ALTAIR_OK = False
+
 # Opsional: scikit-learn untuk regresi (fallback ke numpy jika tidak ada)
 try:
     from sklearn.linear_model import LinearRegression
@@ -102,7 +109,6 @@ def load_excel_sheet(path: str, sheet: str) -> pd.DataFrame:
     # Cari kolom waktu utama
     date_col = coalesce_cols(df, "date_hour")
     if date_col is None:
-        # Sheet turunan mungkin pakai label berbeda
         date_like = [c for c in df.columns if re.search(r"(date|time|hour)", c, re.I)]
         date_col = date_like[0] if date_like else None
     if date_col is None:
@@ -367,21 +373,40 @@ with tab_trends:
     defaults = [v for v in ["system_production","radiation","sunshine"] if v in sel_vars]
     vars_show = st.multiselect("Pilih variabel:", sel_vars, default=defaults or sel_vars[:1])
 
-    renderers = []
-
     def r_line_all():
-        st.line_chart(dff_agg.set_index("timestamp")[vars_show])
+        if not vars_show:
+            st.info("Pilih minimal satu variabel.")
+            return
+        # Altair line chart agar warna tidak merah semua
+        if ALTAIR_OK:
+            plot_df = dff_agg.set_index("timestamp")[vars_show].reset_index()
+            plot_df = plot_df.melt("timestamp", var_name="Variable", value_name="Value")
+            chart = alt.Chart(plot_df).mark_line().encode(
+                x=alt.X("timestamp:T", title="Timestamp"),
+                y=alt.Y("Value:Q", title="Value"),
+                color=alt.Color("Variable:N", scale=alt.Scale(scheme="tableau10"))
+            ).properties(height=320)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            # fallback ke bawaan streamlit
+            st.line_chart(dff_agg.set_index("timestamp")[vars_show])
         if "system_production_smooth" in dff_agg.columns and "system_production" in vars_show:
             st.caption(f"Garis halus (rolling mean) untuk System Production, window={win}.")
-    renderers.append(r_line_all)
+    r_line_all()
 
     def r_daily_peak():
         if "system_production" in dff.columns:
             daily = dff.set_index("timestamp")["system_production"].resample("D").agg(["sum","max","mean"]).rename(columns={"sum":"Sum","max":"Max","mean":"Mean"})
-            st.line_chart(daily)
-    renderers.append(r_daily_peak)
-
-    two_col_or_stack(renderers)
+            if ALTAIR_OK:
+                daily_reset = daily.reset_index().melt("timestamp", var_name="Metric", value_name="Value")
+                chart = alt.Chart(daily_reset).mark_line().encode(
+                    x="timestamp:T", y="Value:Q",
+                    color=alt.Color("Metric:N", scale=alt.Scale(scheme="tableau10"))
+                ).properties(height=300)
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.line_chart(daily)
+    r_daily_peak()
 
 # ---------- Relations ----------
 with tab_rel:
@@ -390,8 +415,6 @@ with tab_rel:
     drop_aux = [c for c in ["hour","dayofweek","month"] if c in num_df.columns]
     num_df = num_df.drop(columns=drop_aux, errors="ignore")
 
-    renderers = []
-
     def r_corr():
         if num_df.shape[1] >= 2:
             corr = num_df.corr(numeric_only=True)
@@ -399,17 +422,23 @@ with tab_rel:
             st.dataframe(corr.style.background_gradient(cmap="RdYlBu", axis=None).format("{:.2f}"))
         else:
             st.info("Tidak cukup kolom numerik untuk korelasi.")
-    renderers.append(r_corr)
+    r_corr()
 
     def r_scatter():
         if "system_production" in num_df.columns:
             numeric_cols = [c for c in num_df.columns if c != "system_production"]
             if numeric_cols:
                 xvar = st.selectbox("X (predictor)", numeric_cols, key="scatter_x")
-                st.scatter_chart(dff_agg[[xvar, "system_production"]])
-    renderers.append(r_scatter)
-
-    two_col_or_stack(renderers)
+                if ALTAIR_OK:
+                    scdf = dff_agg[[xvar, "system_production"]].dropna()
+                    chart = alt.Chart(scdf).mark_point(opacity=0.6).encode(
+                        x=alt.X(xvar, title=xvar),
+                        y=alt.Y("system_production", title="System Production")
+                    ).properties(height=300)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.scatter_chart(dff_agg[[xvar, "system_production"]])
+    r_scatter()
 
 # ---------- Forecast (POC in-app with Actual vs Prediction) ----------
 with tab_fcst:
@@ -428,8 +457,7 @@ with tab_fcst:
     else:
         fcst, mae, holdout = regression_lag_model(base_df, horizon=horizon)
 
-    # Metrics
-    # MAPE pada holdout:
+    # Metrics (hold-out)
     if not holdout.empty:
         err_abs = np.abs(holdout["Actual"] - holdout["Prediction"])
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -446,24 +474,58 @@ with tab_fcst:
     def r_holdout_chart():
         if not holdout.empty:
             st.markdown("**Validation — Actual vs Prediction (15% terakhir)**")
-            st.line_chart(holdout.set_index("timestamp")[["Actual","Prediction"]])
+            if ALTAIR_OK:
+                hdf = holdout.melt("timestamp", var_name="Series", value_name="Value")
+                chart = alt.Chart(hdf).mark_line().encode(
+                    x="timestamp:T", y="Value:Q", color=alt.Color("Series:N", scale=alt.Scale(scheme="tableau10"))
+                ).properties(height=320)
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.line_chart(holdout.set_index("timestamp")[["Actual","Prediction"]])
         else:
             st.info("Tidak ada data hold-out yang valid untuk divisualisasikan.")
 
     def r_future_chart():
-      st.markdown("**Future Forecast — Histori 7 hari terakhir + Prediksi ke depan**")
-      if "system_production" in dff.columns:
-          hist_tail = dff.tail(24*7).copy()
-          hist_tail = hist_tail[["timestamp","system_production"]].rename(columns={"system_production":"y"})
-          fcst_plot = fcst.rename(columns={"yhat":"y"})
-          fcst_plot["Jam"] = fcst_plot["timestamp"].dt.strftime("%H:%M")  # Tambah kolom jam
-          plot_df = pd.concat([hist_tail, fcst_plot], ignore_index=True).set_index("timestamp")
-          st.line_chart(plot_df)
-          # Tambahkan tabel hasil forecast
-          st.dataframe(fcst_plot.rename(columns={"y":"Forecast"}))
-      else:
-          st.info("Kolom produksi tidak tersedia untuk plot histori + forecast.")
+        st.markdown("**Future Forecast — Histori 7 hari terakhir + Prediksi ke depan (dengan Jam)**")
+        if not fcst.empty:
+            # Tambahkan kolom Jam (HH:MM) untuk forecast
+            fcst_plot = fcst.copy()
+            fcst_plot["Jam"] = fcst_plot["timestamp"].dt.strftime("%H:%M")
+            fcst_plot = fcst_plot.rename(columns={"yhat":"Forecast"})
 
+            # Plot histori + forecast
+            if "system_production" in dff.columns:
+                hist_tail = dff.tail(24*7).copy()
+                hist_tail = hist_tail[["timestamp","system_production"]].rename(columns={"system_production":"y"})
+                fcp = fcst_plot.rename(columns={"Forecast":"y"})[["timestamp","y"]]
+                plot_df = pd.concat([hist_tail, fcp], ignore_index=True)
+
+                if ALTAIR_OK:
+                    plot_df = plot_df.rename(columns={"y":"Value"})
+                    plot_df["Series"] = ["History"]*len(hist_tail) + ["Forecast"]*len(fcp)
+                    chart = alt.Chart(plot_df).mark_line().encode(
+                        x="timestamp:T",
+                        y="Value:Q",
+                        color=alt.Color("Series:N", scale=alt.Scale(scheme="tableau10"))
+                    ).properties(height=320)
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.line_chart(plot_df.set_index("timestamp"))
+
+            # Tabel forecast (timestamp, Jam, Forecast)
+            st.dataframe(
+                fcst_plot[["timestamp","Jam","Forecast"]].reset_index(drop=True),
+                use_container_width=True
+            )
+        else:
+            st.info("Belum ada hasil forecast untuk ditampilkan.")
+
+    # 🔑 PANGGIL fungsi agar chart tampil
+    c_left, c_right = st.columns(2)
+    with c_left:
+        r_holdout_chart()
+    with c_right:
+        r_future_chart()
 
 # ---------- Export ----------
 with tab_export:
@@ -485,4 +547,4 @@ with tab_export:
     st.download_button("Download Excel (Aggregated + Forecast)", data=buf.getvalue(), file_name="solar_dashboard_output.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.markdown("---")
-st.caption("Actual vs Prediction diturunkan langsung dari model di dalam dashboard (hold-out 15%). Layout otomatis dua kolom jika lebar, dan stack ke bawah bila konten banyak.")
+st.caption("Actual vs Prediction diturunkan langsung dari model di dalam dashboard (hold-out 15%). Line chart memakai palet warna konsisten (Altair).")
