@@ -2,15 +2,16 @@
 # Streamlit dashboard for "Solar Power Plant" dataset (No-Upload, Responsive Layout, In-App Actual vs Prediction)
 # Jalankan: streamlit run solar_dashboard_streamlit.py
 
+import glob
 import io
+import math
 import os
 import re
-import glob
-import math
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 import streamlit as st
-from datetime import timedelta
 
 # Opsional: scikit-learn untuk regresi (fallback ke numpy jika tidak ada)
 try:
@@ -354,35 +355,6 @@ with tab_overview:
     renderers.append(r_table_hour_avg)
 
     two_col_or_stack(renderers)
-
-    # === Tambahan Distribusi Data ===
-    st.markdown("### 📊 Distribusi Data")
-    import matplotlib.pyplot as plt
-
-    num_cols = ["system_production", "radiation", "sunshine"]
-    num_cols = [c for c in num_cols if c in dff.columns]
-
-    col1, col2 = st.columns(2)
-    for i, col in enumerate(num_cols):
-        fig, ax = plt.subplots(figsize=(3.5, 2))
-        ax.hist(dff[col].dropna(), bins=30, color="skyblue", edgecolor="black")
-        ax.set_title(f"Distribusi {col}", fontsize=10)
-        ax.tick_params(axis="x", labelsize=8)
-        ax.tick_params(axis="y", labelsize=8)
-        if i % 2 == 0:
-            with col1: st.pyplot(fig, clear_figure=True)
-        else:
-            with col2: st.pyplot(fig, clear_figure=True)
-
-    # Boxplot mini
-    if len(num_cols) > 0:
-        fig, ax = plt.subplots(figsize=(4, 2))
-        dff[num_cols].plot(kind="box", ax=ax)
-        ax.set_title("Boxplot Variabel Utama", fontsize=10)
-        ax.tick_params(axis="x", labelsize=8)
-        with st.expander("Lihat Boxplot"):
-            st.pyplot(fig, clear_figure=True)
-
 
 # ---------- Trends ----------
 with tab_trends:
