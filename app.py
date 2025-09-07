@@ -3,7 +3,6 @@ import io
 import math
 import os
 import re
-import traceback
 from datetime import timedelta
 
 import numpy as np
@@ -24,7 +23,6 @@ try:
     from plotly.subplots import make_subplots
     PLOTLY_OK = True
 except Exception as _e:
-    # Capture full traceback for optional display & keep a short message
     PLOTLY_OK = False
     PLOTLY_IMPORT_ERROR = _e
 
@@ -964,6 +962,10 @@ with tab_overview:
     renderers.append(r_table_hour_avg)
     two_col_or_stack(renderers)
 
+    # Raw data preview (original loaded dataframe slice)
+    with st.expander("📄 Preview Data Asli (Top 20 Rows)", expanded=False):
+        st.dataframe(df.head(20), use_container_width=True)
+
 # Tab Trends
 with tab_trends:
     st.subheader("📈 Tren Waktu")
@@ -1200,29 +1202,154 @@ with tab_trends:
 # Tab Relations
 with tab_rel:
     st.subheader("🔗 Korelasi & Statistik")
+    # Deskripsi variabel (singkat: asal & kegunaan)
+    VAR_DESCRIPTIONS = {
+        "system_production": "Output listrik aktual sistem (target utama analisis).",
+        "radiation": "Intensitas radiasi matahari (driver utama produksi).",
+        "sunshine": "Durasi/indikator penyinaran (proxy kondisi cerah).",
+        "air_temperature": "Suhu udara; mempengaruhi efisiensi panel (terlalu panas menurunkan output).",
+        "wind_speed": "Kecepatan angin; bisa membantu pendinginan panel.",
+        "air_pressure": "Tekanan udara; biasanya korelasi lemah, konteks meteorologi.",
+        "relative_air_humidity": "Kelembapan relatif; tinggi dapat meningkatkan difusi cahaya.",
+        "solar_efficiency": "Rasio produksi terhadap radiasi (indikator performa panel).",
+        "hour_sin": "Encoding siklik jam (sine) untuk model ML (diabaikan di scatter).",
+        "hour_cos": "Encoding siklik jam (cosine) untuk model ML (diabaikan di scatter).",
+        "month_sin": "Encoding siklik bulan (sine) untuk pola musiman (diabaikan di scatter).",
+        "month_cos": "Encoding siklik bulan (cosine) untuk pola musiman (diabaikan di scatter).",
+        "day_sin": "Encoding siklik hari-ke dalam setahun (sine) (diabaikan di scatter).",
+        "day_cos": "Encoding siklik hari-ke dalam setahun (cosine) (diabaikan di scatter).",
+        "is_daytime": "Flag 1=jam siang (6-18); bantu model filter jam produksi.",
+        "is_peak_solar": "Flag 1=jam puncak (10-15); area efisiensi maksimum tipikal.",
+        "lag_1": "Produksi 1 jam sebelumnya (autokorelasi).",
+        "lag_2": "Produksi 2 jam sebelumnya.",
+        "lag_3": "Produksi 3 jam sebelumnya.",
+        "lag_6": "Produksi 6 jam sebelumnya (setengah hari).",
+        "lag_12": "Produksi 12 jam sebelumnya (pola harian).",
+        "lag_24": "Produksi 24 jam sebelumnya (repeat pola harian).",
+        "rad_lag_1": "Radiasi 1 jam sebelumnya.",
+        "rad_lag_2": "Radiasi 2 jam sebelumnya.",
+        "rad_lag_3": "Radiasi 3 jam sebelumnya.",
+        "rad_lag_6": "Radiasi 6 jam sebelumnya.",
+        "rad_lag_12": "Radiasi 12 jam sebelumnya.",
+        "rad_lag_24": "Radiasi 24 jam sebelumnya.",
+        "rad_temp_interaction": "Interaksi radiasi × suhu (efek panas terhadap output).",
+        "sun_rad_interaction": "Interaksi sunshine × radiasi (kondisi langit + intensitas)."
+    }
     num_df = dff_agg.select_dtypes(include=["number"]).copy()
     drop_aux = [c for c in ["hour","dayofweek","month"] if c in num_df.columns]
     num_df = num_df.drop(columns=drop_aux, errors="ignore")
     if num_df.shape[1] >= 2:
-        corr = num_df.corr(numeric_only=True)
-        st.write("**Matriks Korelasi (Pearson)**")
-        st.dataframe(corr.style.background_gradient(cmap="RdYlBu", axis=None).format("{:.2f}"))
-    if not num_df.empty:
-        stats = []
-        for col in num_df.columns:
-            series = num_df[col].dropna()
-            if series.empty: continue
-            stats.append({"Variable": col, "Mean": float(series.mean()), "Median": float(series.median()), "StdDev": float(series.std(ddof=1)) if len(series)>1 else 0.0})
-        if stats:
-            stats_df = pd.DataFrame(stats).sort_values("Variable").reset_index(drop=True)
-            st.markdown("**Ringkasan Statistik (Mean / Median / StdDev)**")
-            st.dataframe(stats_df, use_container_width=True)
+        # Exclude engineered/time/binary flags from heatmap to avoid clutter & "black" grids
+        heatmap_exclude = {"hour_sin","hour_cos","month_sin","month_cos","day_sin","day_cos","is_daytime","is_peak_solar","day_of_year"}
+        hm_df = num_df.drop(columns=[c for c in num_df.columns if c in heatmap_exclude], errors="ignore")
+        # Drop constant columns (no variance -> all NaN corr)
+        constant_cols = [c for c in hm_df.columns if hm_df[c].nunique(dropna=True) <= 1]
+        if constant_cols:
+            hm_df = hm_df.drop(columns=constant_cols, errors="ignore")
+        if hm_df.shape[1] >= 2:
+            corr = hm_df.corr(numeric_only=True)
+            st.markdown("**Correlation Heatmap (Pearson)** — variabel waktu/encoding & konstanta disembunyikan")
+            if PLOTLY_OK:
+                try:
+                    import plotly.graph_objects as go  # already imported
+                    hovertext = [
+                        [
+                            f"{row_var} vs {col_var}<br>r={corr.loc[row_var, col_var]:.2f}" + (f"<br>{VAR_DESCRIPTIONS.get(row_var,'')}" if VAR_DESCRIPTIONS.get(row_var) else "")
+                            for col_var in corr.columns
+                        ]
+                        for row_var in corr.index
+                    ]
+                    fig_hm = go.Figure(data=go.Heatmap(
+                        z=corr.values,
+                        x=corr.columns,
+                        y=corr.index,
+                        colorscale='RdYlBu',
+                        zmin=-1, zmax=1,
+                        text=hovertext,
+                        hoverinfo='text',
+                        colorbar=dict(title='r')
+                    ))
+                    fig_hm.update_layout(height=450, margin=dict(l=60,r=20,t=40,b=60))
+                    st.plotly_chart(fig_hm, use_container_width=True)
+                except Exception:
+                    st.dataframe(corr.style.background_gradient(cmap="RdYlBu", axis=None).format("{:.2f}"))
+            else:
+                st.dataframe(corr.style.background_gradient(cmap="RdYlBu", axis=None).format("{:.2f}"))
+
+            # Correlation matrix table (same subset) with header tooltips
+            st.write("**Correlation Matrix Table (subset)**")
+            col_cfg = {}
+            for col in corr.columns:
+                desc = VAR_DESCRIPTIONS.get(col, "")
+                col_cfg[col] = st.column_config.NumberColumn(col, help=desc, format="%.2f")
+            st.dataframe(corr, use_container_width=True, column_config=col_cfg)
+        else:
+            st.info("Kolom numerik yang cukup untuk heatmap tidak tersedia setelah eksklusi.")
+        if not num_df.empty:
+            stats = []
+            for col in num_df.columns:
+                series = num_df[col].dropna()
+                if series.empty:
+                    continue
+                stats.append({
+                    "Variable": col,
+                    "Mean": float(series.mean()),
+                    "Median": float(series.median()),
+                    "StdDev": float(series.std(ddof=1)) if len(series) > 1 else 0.0
+                })
+            if stats:
+                stats_df = pd.DataFrame(stats).sort_values("Variable").reset_index(drop=True)
+                st.markdown("**Ringkasan Statistik (Mean / Median / StdDev)** — hover nama variabel (custom HTML)")
+                # Build custom HTML table with per-variable tooltip (title attr)
+                def _html_escape(s):
+                    return (str(s)
+                            .replace('&','&amp;')
+                            .replace('<','&lt;')
+                            .replace('>','&gt;')
+                            .replace('"','&quot;'))
+                rows_html = []
+                for _, r in stats_df.iterrows():
+                    var = r['Variable']
+                    desc = VAR_DESCRIPTIONS.get(var, "")
+                    cell_var = f"<span title='{_html_escape(desc)}'>{_html_escape(var)}</span>" if desc else _html_escape(var)
+                    rows_html.append(
+                        f"<tr><td>{cell_var}</td><td style='text-align:right'>{r['Mean']:.2f}</td><td style='text-align:right'>{r['Median']:.2f}</td><td style='text-align:right'>{r['StdDev']:.2f}</td></tr>"
+                    )
+                table_html = """
+                <div style='max-height:420px;overflow:auto;border:1px solid #ddd;border-radius:4px;'>
+                <table style='width:100%;border-collapse:collapse;font-size:0.9rem;'>
+                    <thead style='position:sticky;top:0;background:#f7f7f9;'>
+                        <tr>
+                            <th style='text-align:left;padding:4px 6px;'>Variable</th>
+                            <th style='text-align:right;padding:4px 6px;'>Mean</th>
+                            <th style='text-align:right;padding:4px 6px;'>Median</th>
+                            <th style='text-align:right;padding:4px 6px;'>StdDev</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                """ + "".join(rows_html) + """
+                    </tbody>
+                </table>
+                </div>
+                <p style='font-size:0.75rem;color:#666;margin-top:4px;'>Tooltip: arahkan kursor ke nama variabel untuk deskripsi.</p>
+                """
+                st.markdown(table_html, unsafe_allow_html=True)
+            # Tambah daftar deskripsi di expander (referensi lengkap)
+            with st.expander("📘 Deskripsi Variabel Lengkap"):
+                for k in sorted(set(VAR_DESCRIPTIONS.keys()) & set(num_df.columns)):
+                    st.markdown(f"**{k}**: {VAR_DESCRIPTIONS[k]}")
     if "system_production" in num_df.columns:
         numeric_cols = [c for c in num_df.columns if c != "system_production"]
+        # Hilangkan variabel turunan waktu & encoding supaya tidak muncul di pilihan X
+        time_exclude = {"hour","dayofweek","month","day_of_year","hour_sin","hour_cos","month_sin","month_cos","day_sin","day_cos","is_daytime","is_peak_solar"}
+        numeric_cols = [c for c in numeric_cols if c not in time_exclude]
         if numeric_cols:
             st.markdown("**Scatter Plot: Hubungan dengan System Production**")
             xvar = st.selectbox("X (predictor)", numeric_cols, key="scatter_x")
             scdf = dff_agg[[xvar, "system_production"]].dropna()
+            # Tampilkan deskripsi variabel terpilih
+            if xvar in VAR_DESCRIPTIONS:
+                st.caption(f"ℹ️ {xvar}: {VAR_DESCRIPTIONS[xvar]}")
             
             if PLOTLY_OK:
                 # Create interactive scatter plot; add trendline only if statsmodels tersedia
