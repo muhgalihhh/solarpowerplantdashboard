@@ -1,7 +1,3 @@
-# app_revised.py
-# Streamlit dashboard for "Solar Power Plant" — revised per user request
-# Jalankan: streamlit run app_revised.py
-
 import glob
 import io
 import math
@@ -46,8 +42,8 @@ except Exception:
     SKLEARN_OK = False
 
 # ---------- Page Config ----------
-st.set_page_config(page_title="Solar Power Plant Dashboard (Revised)", page_icon="🔆", layout="wide", initial_sidebar_state="expanded")
-st.title("🔆 Solar Power Plant — Dashboard (Revised)")
+st.set_page_config(page_title="Solar Power Plant Dashboard ", page_icon="🔆", layout="wide", initial_sidebar_state="expanded")
+st.title("🔆 Solar Power Plant — Dashboard")
 st.caption("Membaca otomatis file Excel yang diunggah. Lengkap: Overview, Analisis, Forecasting, dan Kasus Bisnis.")
 
 # ---------- File Discovery ----------
@@ -1713,4 +1709,4 @@ with tab_export:
     st.download_button("Download Excel (Aggregated + Forecast)", data=buf.getvalue(), file_name="solar_dashboard_output.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.markdown("---")
-st.caption("Dashboard revised: overview, analisis, forecasting, dan narasi bisnis.")
+st.caption("Dashboard: overview, analisis, forecasting, dan narasi bisnis.")
