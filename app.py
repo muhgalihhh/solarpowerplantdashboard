@@ -3,6 +3,7 @@ import io
 import math
 import os
 import re
+import traceback
 from datetime import timedelta
 
 import numpy as np
@@ -16,13 +17,16 @@ try:
 except Exception:
     ALTAIR_OK = False
 
+PLOTLY_IMPORT_ERROR = None
 try:
     import plotly.express as px
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
     PLOTLY_OK = True
-except Exception:
+except Exception as _e:
+    # Capture full traceback for optional display & keep a short message
     PLOTLY_OK = False
+    PLOTLY_IMPORT_ERROR = _e
 
 try:
     import warnings
@@ -46,28 +50,48 @@ st.set_page_config(page_title="Solar Power Plant Dashboard ", page_icon="🔆", 
 st.title("🔆 Solar Power Plant — Dashboard")
 st.caption("Membaca otomatis file Excel yang diunggah. Lengkap: Overview, Analisis, Forecasting, dan Kasus Bisnis.")
 
+# Early diagnostic warning if Plotly gagal di-import
+if not 'PLOTLY_OK' in globals() or not PLOTLY_OK:
+    with st.sidebar.expander("⚠️ Plotly tidak aktif — klik untuk detail", expanded=True):
+        st.warning("Plotly tidak tersedia, fallback ke Altair / chart bawaan. Lihat penyebab di bawah.")
+        if PLOTLY_IMPORT_ERROR:
+            st.code(f"{type(PLOTLY_IMPORT_ERROR).__name__}: {PLOTLY_IMPORT_ERROR}")
+            st.markdown("**Solusi umum:**")
+            st.markdown("""
+1. Pastikan environment yang menjalankan Streamlit sama dengan environment tempat Anda meng-install dependency.
+2. Upgrade / reinstall plotly & kompatibilitas numpy:
+   - Windows PowerShell:
+     ```powershell
+     pip install --upgrade pip
+     pip install --upgrade plotly numpy
+     ```
+3. Jika error terkait `numpy.bool` atau tipe deprecated: downgrade numpy ke versi < 2.0 atau upgrade plotly terbaru.
+4. Jika memakai `trendline="ols"` (scatter), instal `statsmodels`:
+     ```powershell
+     pip install statsmodels
+     ```
+5. Restart Streamlit setelah instalasi: tutup app lalu jalankan lagi.
+            """)
+        else:
+            st.info("Tidak ada pesan error yang tertangkap (kemungkinan variabel environment berbeda). Coba jalankan `python -c \"import plotly; print(plotly.__version__)\"` di terminal yang sama.")
+
 # ---------- File Discovery ----------
-PREFERRED_FILES = [
-    "Solar Power Plant Data XLSX new.xlsx",
-    "Solar Power Plant Dataset XLSX.xlsx",
-    "Solar Power Plant Data XLSX Analyst.xlsx",
-    "Solar Power Plant Data XLSX Analyst Result.xlsx",
-]
-found_files = [f for f in PREFERRED_FILES if os.path.exists(f)]
-if not found_files:
-    patterns = [
-        "*Solar*Power*Plant*Data*XLSX*Analyst*.xlsx",
-        "*Solar*Power*Plant*Dataset*XLSX*.xlsx",
-        "*Solar*Power*Plant*Data*new*.xlsx",
-        "*Solar*Power*Plant*Data*XLSX*.xlsx",
-    ]
-    for p in patterns:
-        found_files.extend(glob.glob(p))
-    found_files = sorted(set(found_files))
+DATASET_KEYWORD = "dataset"  # case-insensitive substring yang wajib ada
+
+# Cari semua xlsx di folder kerja yang mengandung kata 'Dataset'
+candidate_patterns = ["*.xlsx", "*Solar*Power*Plant*Dataset*.xlsx"]
+all_candidates = []
+for pat in candidate_patterns:
+    all_candidates.extend(glob.glob(pat))
+
+# Filter hanya yang mengandung kata 'dataset' (case-insensitive)
+found_files = [f for f in sorted(set(all_candidates)) if re.search(DATASET_KEYWORD, f, re.IGNORECASE)]
 
 if not found_files:
-    st.error("Tidak menemukan file Excel. Pastikan file ada di folder yang sama dengan script.")
+    st.error("Tidak menemukan file dataset (nama harus mengandung kata 'Dataset'). Letakkan file di folder ini.")
     st.stop()
+
+# Jika lebih dari satu, tetap beri pilihan; jika hanya satu, langsung pakai tanpa selectbox
 
 # ---------- Helpers ----------
 STANDARD_COLS = {
@@ -809,7 +833,11 @@ def two_col_or_stack(renderers):
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Data & Filter")
-file_choice = st.sidebar.selectbox("Pilih file Excel:", options=found_files)
+if len(found_files) == 1:
+    file_choice = found_files[0]
+    st.sidebar.success(f"Menggunakan dataset: {file_choice}")
+else:
+    file_choice = st.sidebar.selectbox("Pilih file Dataset:", options=found_files)
 xls = pd.ExcelFile(file_choice)
 preferred_order = ["Solar Power Plant Data", "Feature Engineering", "Forecasting"]
 sheet_names = sorted(xls.sheet_names, key=lambda s: (preferred_order.index(s) if s in preferred_order else 99, s))
@@ -1197,17 +1225,24 @@ with tab_rel:
             scdf = dff_agg[[xvar, "system_production"]].dropna()
             
             if PLOTLY_OK:
-                # Create interactive scatter plot with trend line
+                # Create interactive scatter plot; add trendline only if statsmodels tersedia
+                _trendline = None
+                try:
+                    import statsmodels  # noqa: F401
+                    _trendline = "ols"
+                except Exception:
+                    _trendline = None
+
                 fig = px.scatter(
-                    scdf, 
-                    x=xvar, 
+                    scdf,
+                    x=xvar,
                     y="system_production",
                     title=f"Interactive Scatter: {xvar.replace('_', ' ').title()} vs System Production",
                     hover_data={
                         xvar: ':.2f',
                         'system_production': ':.2f'
                     },
-                    trendline="ols"
+                    trendline=_trendline
                 )
                 
                 # Improve styling
@@ -1220,9 +1255,10 @@ with tab_rel:
                     selector=dict(mode='markers')
                 )
                 
-                # Update trendline styling
-                fig.data[1].line.color = 'red'
-                fig.data[1].line.width = 2
+                # Update trendline styling if present
+                if len(fig.data) > 1 and fig.data[1].mode == 'lines':
+                    fig.data[1].line.color = 'red'
+                    fig.data[1].line.width = 2
                 
                 fig.update_layout(
                     height=450,

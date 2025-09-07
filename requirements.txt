@@ -7,3 +7,4 @@ scikit-learn
 openpyxl
 xlsxwriter
 plotly
+statsmodels  # needed for plotly express trendline="ols" on deployment
