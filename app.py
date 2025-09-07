@@ -274,10 +274,12 @@ def seasonal_hourly_baseline(df: pd.DataFrame, horizon: int = 24):
     if df.empty or "system_production" not in df.columns:
         return pd.DataFrame(columns=["timestamp","yhat"]), np.nan, pd.DataFrame(columns=["timestamp","Actual","Prediction"])
     
-    # Improved train/test split - 90% train / 10% test
-    min_train_size = min(24*3, int(len(df)*0.8))  # At least 3 days or 80%
-    cutoff = max(min_train_size, int(len(df)*0.90))  # 90% untuk training
-    cutoff = min(cutoff, len(df) - 12)  # Ensure we have at least 12 hours for testing
+    # Train/test split: fixed last 10% of rows as validation (chronological)
+    n = len(df)
+    test_size = max(1, int(math.ceil(n * 0.10)))  # at least 1 point
+    if test_size >= n:  # safeguard
+        test_size = 1
+    cutoff = n - test_size
     
     train = df.iloc[:cutoff]
     test = df.iloc[cutoff:]
@@ -322,6 +324,8 @@ def seasonal_hourly_baseline(df: pd.DataFrame, horizon: int = 24):
     if len(test) > 0:
         y_true = test["system_production"].values
         y_pred = test["timestamp"].apply(get_prediction).values
+        # Clamp to non-negative (produksi solar tidak boleh negatif)
+        y_pred = np.maximum(y_pred, 0.0)
         mae = float(np.nanmean(np.abs(y_true - y_pred)))
         holdout_df = pd.DataFrame({
             "timestamp": test["timestamp"].values, 
@@ -335,7 +339,9 @@ def seasonal_hourly_baseline(df: pd.DataFrame, horizon: int = 24):
     # Future forecasts
     last_ts = df["timestamp"].max()
     future_timestamps = pd.date_range(last_ts + pd.Timedelta(hours=1), periods=horizon, freq="H")
-    forecast_values = [get_prediction(ts) for ts in future_timestamps]
+    forecast_raw = [get_prediction(ts) for ts in future_timestamps]
+    # Clamp negatives to zero for future forecast
+    forecast_values = [max(0.0, v) for v in forecast_raw]
     
     fcst_future = pd.DataFrame({
         "timestamp": future_timestamps, 
@@ -403,10 +409,12 @@ def regression_lag_model(df: pd.DataFrame, horizon: int = 24):
     if work.empty:
         return pd.DataFrame(columns=["timestamp","yhat"]), np.nan, pd.DataFrame(columns=["timestamp","Actual","Prediction"])
     
-    # Train/test split - 90% train / 10% test
-    min_train_size = min(24*3, int(len(work)*0.8))  # At least 3 days
-    cutoff = max(min_train_size, int(len(work)*0.90))  # 90% untuk training
-    cutoff = min(cutoff, len(work) - 12)  # Ensure we have at least 12 hours for testing
+    # Train/test split: last 10% of chronological data for validation
+    n = len(work)
+    test_size = max(1, int(math.ceil(n * 0.10)))
+    if test_size >= n:
+        test_size = 1
+    cutoff = n - test_size
     
     X_train, y_train = work.loc[:cutoff-1, feature_cols], work.loc[:cutoff-1, "system_production"]
     X_test, y_test = work.loc[cutoff:, feature_cols], work.loc[cutoff:, "system_production"]
@@ -562,10 +570,12 @@ def random_forest_model(df: pd.DataFrame, horizon: int = 24, n_estimators: int =
     if work.empty:
         return pd.DataFrame(columns=["timestamp","yhat"]), np.nan, pd.DataFrame(columns=["timestamp","Actual","Prediction"])
     
-    # Train/test split - 90% train / 10% test
-    min_train_size = min(24*3, int(len(work)*0.8))  # At least 3 days
-    cutoff = max(min_train_size, int(len(work)*0.90))  # 90% untuk training
-    cutoff = min(cutoff, len(work) - 12)  # Ensure we have at least 12 hours for testing
+    # Train/test split: last 10% of chronological data for validation
+    n = len(work)
+    test_size = max(1, int(math.ceil(n * 0.10)))
+    if test_size >= n:
+        test_size = 1
+    cutoff = n - test_size
     
     X_train, y_train = work.loc[:cutoff-1, feature_cols], work.loc[:cutoff-1, "system_production"]
     X_test, y_test = work.loc[cutoff:, feature_cols], work.loc[cutoff:, "system_production"]
@@ -670,7 +680,12 @@ def gradient_boosting_model(df: pd.DataFrame, horizon: int = 24, n_estimators: i
     if work.empty:
         return pd.DataFrame(columns=["timestamp","yhat"]), np.nan, pd.DataFrame(columns=["timestamp","Actual","Prediction"])
     
-    cutoff = int(len(work)*0.85)
+    # Train/test split: last 10% of data
+    n = len(work)
+    test_size = max(1, int(math.ceil(n * 0.10)))
+    if test_size >= n:
+        test_size = 1
+    cutoff = n - test_size
     X_train, y_train = work.loc[:cutoff-1, feature_cols], work.loc[:cutoff-1, "system_production"]
     X_test, y_test = work.loc[cutoff:, feature_cols], work.loc[cutoff:, "system_production"]
     ts_test = work.loc[cutoff:, "timestamp"]
@@ -748,7 +763,12 @@ def polynomial_regression_model(df: pd.DataFrame, horizon: int = 24, degree: int
     if work.empty:
         return pd.DataFrame(columns=["timestamp","yhat"]), np.nan, pd.DataFrame(columns=["timestamp","Actual","Prediction"])
     
-    cutoff = int(len(work)*0.85)
+    # Train/test split: last 10% of data
+    n = len(work)
+    test_size = max(1, int(math.ceil(n * 0.10)))
+    if test_size >= n:
+        test_size = 1
+    cutoff = n - test_size
     X_train_base = work.loc[:cutoff-1, base_feature_cols]
     X_test_base = work.loc[cutoff:, base_feature_cols]
     y_train = work.loc[:cutoff-1, "system_production"]
@@ -861,32 +881,7 @@ agg = st.sidebar.radio("Agregasi", options=["Hourly","Daily","Weekly"], index=0,
 freq = {"Hourly":"H","Daily":"D","Weekly":"W"}[agg]
 dff_agg = aggregate(dff, freq=freq)
 
-# Smoothing Options
-st.sidebar.markdown("### 📊 Smoothing Options")
-st.sidebar.markdown("**Smoothing windows** menghaluskan data dengan mengurangi noise dan fluktuasi acak, membantu mengidentifikasi tren yang lebih jelas.")
-
-smoothing_method = st.sidebar.selectbox(
-    "Metode Smoothing:", 
-    ["Simple Moving Average", "Exponential Smoothing"],
-    help="Simple Moving Average: rata-rata sederhana dari N periode. Exponential Smoothing: memberikan bobot lebih pada data terbaru."
-)
-
-win = st.sidebar.slider("Smoothing window (periode)", min_value=1, max_value=48, value=6,
-                       help="Jumlah periode untuk perhitungan rata-rata bergerak. Semakin besar = lebih halus tapi kurang responsif.")
-
-if "system_production" in dff_agg.columns:
-    if smoothing_method == "Simple Moving Average":
-        dff_agg["system_production_smooth"] = dff_agg["system_production"].rolling(win, min_periods=1).mean()
-    else:  # Exponential Smoothing
-        alpha = 2.0 / (win + 1)  # Convert window to alpha
-        dff_agg["system_production_smooth"] = dff_agg["system_production"].ewm(alpha=alpha, adjust=False).mean()
-
-# Add info about smoothing effect
-if "system_production_smooth" in dff_agg.columns:
-    original_std = dff_agg["system_production"].std()
-    smooth_std = dff_agg["system_production_smooth"].std()
-    noise_reduction = (1 - smooth_std/original_std) * 100 if original_std > 0 else 0
-    st.sidebar.info(f"**Noise reduction:** {noise_reduction:.1f}%")
+# (Fitur smoothing dihapus sesuai permintaan pengguna)
 
 # ---------- Tabs ----------
 tab_overview, tab_trends, tab_rel, tab_fcst, tab_biz, tab_export = st.tabs(
@@ -969,28 +964,15 @@ with tab_overview:
 # Tab Trends
 with tab_trends:
     st.subheader("📈 Tren Waktu")
-    
-    # Show smoothing information if available
-    if "system_production_smooth" in dff_agg.columns:
-        st.info(f"ℹ️ **Smoothing aktif:** {smoothing_method} dengan window {win} periode | Noise reduction: {noise_reduction:.1f}%")
-    
-    # Option to show smoothed data
-    show_smooth = st.checkbox("Tampilkan data yang dihaluskan (smoothed)", value=False, 
-                              help=f"Menggunakan {smoothing_method.lower()} dengan window {win} periode untuk menghaluskan data dan mengurangi noise")
-    
     sel_vars = []
     if "system_production" in dff_agg.columns: 
         sel_vars.append("system_production")
-        if show_smooth and "system_production_smooth" in dff_agg.columns:
-            sel_vars.append("system_production_smooth")
     
     for optional in ["radiation","sunshine","air_temperature","wind_speed","relative_air_humidity","air_pressure"]:
         if optional in dff_agg.columns:
             sel_vars.append(optional)
     
     defaults = [v for v in ["system_production","radiation","sunshine"] if v in sel_vars]
-    if show_smooth and "system_production_smooth" in sel_vars:
-        defaults = [v.replace("system_production", "system_production_smooth") if v == "system_production" else v for v in defaults]
     
     vars_show = st.multiselect("Pilih variabel:", sel_vars, default=defaults or sel_vars[:1])
     
@@ -1001,18 +983,13 @@ with tab_trends:
             
             for var in vars_show:
                 data_subset = dff_agg.dropna(subset=[var])
-                
-                # Customize line style for smoothed data
-                line_width = 3 if 'smooth' in var else 2
-                line_color = 'red' if 'smooth' in var else None
-                var_name = var.replace('_smooth', ' (Smoothed)').replace('_', ' ').title()
-                
+                var_name = var.replace('_', ' ').title()
                 fig.add_trace(go.Scatter(
                     x=data_subset["timestamp"],
                     y=data_subset[var],
                     mode='lines',
                     name=var_name,
-                    line=dict(width=line_width, color=line_color) if line_color else dict(width=line_width),
+                    line=dict(width=2),
                     hovertemplate=(
                         f"<b>{var_name}</b><br>"
                         "Time: %{x}<br>"
@@ -1454,6 +1431,12 @@ with tab_fcst:
                 "Random Forest (best for solar prediction)"
             ]
         )
+    MODEL_DESCRIPTIONS = {
+        "Seasonal Hourly Baseline": "Baseline sederhana: rata-rata historis per jam (dan pola musiman) → pembanding minimum.",
+        "Linear Regression (enhanced for solar)": "Regresi linear dengan fitur lag & cuaca dasar; cepat dan interpretatif.",
+        "Random Forest (best for solar prediction)": "Ensemble pohon; tangkap non-linear & interaksi fitur, biasanya akurasi lebih tinggi."
+    }
+    st.caption(f"ℹ️ {MODEL_DESCRIPTIONS.get(model_type, '')}")
     
     # Parameter tuning hanya untuk Random Forest
     if model_type == "Random Forest (best for solar prediction)":
@@ -1461,8 +1444,12 @@ with tab_fcst:
     
     # Prepare base data
     base_cols = ["timestamp","system_production","radiation","sunshine","air_temperature","hour_sin","hour_cos","dayofweek"]
-    base_cols = [c for c in base_cols if c in df.columns]
-    base_df = df[base_cols].copy()
+    # Gunakan data yang sudah DIFILTER rentang tanggal (dff), bukan keseluruhan df
+    base_cols = [c for c in base_cols if c in dff.columns]
+    base_df = dff[base_cols].copy()
+    if base_df.empty or base_df["system_production"].dropna().empty:
+        st.warning("Data pada rentang tanggal terpilih kosong atau tanpa produksi. Persempit / ubah rentang tanggal.")
+        st.stop()
     
     # Run selected model
     with st.spinner(f"Running {model_type}..."):
@@ -1511,7 +1498,7 @@ with tab_fcst:
     
     c_left, c_right = st.columns(2)
     with c_left:
-        st.markdown("**Validation — Actual vs Prediction (15% terakhir)**")
+        st.markdown("**Validation — Actual vs Prediction (10% terakhir)**")
         if not holdout.empty:
             if PLOTLY_OK:
                 # Create interactive validation chart
