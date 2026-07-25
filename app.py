@@ -336,9 +336,15 @@ def seasonal_hourly_baseline(df: pd.DataFrame, horizon: int = 24):
         mae = np.nan
         holdout_df = pd.DataFrame(columns=["timestamp","Actual","Prediction"])
     
-    # Future forecasts
+    # Future forecasts (gunakan delta waktu aktual antar baris)
     last_ts = df["timestamp"].max()
-    future_timestamps = pd.date_range(last_ts + pd.Timedelta(hours=1), periods=horizon, freq="H")
+    if len(df) >= 2:
+        delta = (df["timestamp"].sort_values().diff().median())
+        if pd.isna(delta) or delta is None:
+            delta = pd.Timedelta(hours=1)
+    else:
+        delta = pd.Timedelta(hours=1)
+    future_timestamps = [last_ts + delta * i for i in range(1, horizon+1)]
     forecast_raw = [get_prediction(ts) for ts in future_timestamps]
     # Clamp negatives to zero for future forecast
     forecast_values = [max(0.0, v) for v in forecast_raw]
@@ -457,8 +463,16 @@ def regression_lag_model(df: pd.DataFrame, horizon: int = 24):
     hist = work.copy()
     last_ts = df["timestamp"].max()
     
+    # Tentukan delta periode aktual (bisa jam, hari, minggu tergantung agregasi)
+    if len(df) >= 2:
+        base_delta = df["timestamp"].sort_values().diff().median()
+        if pd.isna(base_delta) or base_delta is None:
+            base_delta = pd.Timedelta(hours=1)
+    else:
+        base_delta = pd.Timedelta(hours=1)
+
     for h in range(1, horizon+1):
-        next_ts = last_ts + timedelta(hours=h)
+        next_ts = last_ts + base_delta * h
         
         # Get historical data for lag calculation
         tmp = hist.copy()
@@ -597,8 +611,14 @@ def random_forest_model(df: pd.DataFrame, horizon: int = 24, n_estimators: int =
     hist = work.copy()
     last_ts = df["timestamp"].max()
     
+    if len(df) >= 2:
+        base_delta = df["timestamp"].sort_values().diff().median()
+        if pd.isna(base_delta) or base_delta is None:
+            base_delta = pd.Timedelta(hours=1)
+    else:
+        base_delta = pd.Timedelta(hours=1)
     for h in range(1, horizon+1):
-        next_ts = last_ts + timedelta(hours=h)
+        next_ts = last_ts + base_delta * h
         
         # Get lag values
         def get_lag_value(col, lag_periods):
@@ -704,8 +724,14 @@ def gradient_boosting_model(df: pd.DataFrame, horizon: int = 24, n_estimators: i
     hist = work.copy()
     last_ts = df["timestamp"].max()
     
+    if len(df) >= 2:
+        base_delta = df["timestamp"].sort_values().diff().median()
+        if pd.isna(base_delta) or base_delta is None:
+            base_delta = pd.Timedelta(hours=1)
+    else:
+        base_delta = pd.Timedelta(hours=1)
     for h in range(1, horizon+1):
-        next_ts = last_ts + timedelta(hours=h)
+        next_ts = last_ts + base_delta * h
         tmp = hist.copy(); tmp.index = pd.DatetimeIndex(hist["timestamp"])
         
         def get_lag(col, L):
@@ -799,8 +825,14 @@ def polynomial_regression_model(df: pd.DataFrame, horizon: int = 24, degree: int
     hist = work.copy()
     last_ts = df["timestamp"].max()
     
+    if len(df) >= 2:
+        base_delta = df["timestamp"].sort_values().diff().median()
+        if pd.isna(base_delta) or base_delta is None:
+            base_delta = pd.Timedelta(hours=1)
+    else:
+        base_delta = pd.Timedelta(hours=1)
     for h in range(1, horizon+1):
-        next_ts = last_ts + timedelta(hours=h)
+        next_ts = last_ts + base_delta * h
         tmp = hist.copy(); tmp.index = pd.DatetimeIndex(hist["timestamp"])
         
         def get_lag(col, L):
@@ -1421,7 +1453,13 @@ with tab_fcst:
     # Model selection dengan pilihan yang disederhanakan dan cocok untuk solar power
     col1, col2 = st.columns(2)
     with col1:
-        horizon = st.slider("Horizon prediksi (jam ke depan)", min_value=6, max_value=168, value=24, step=6)
+        # Sesuaikan horizon berdasarkan agregasi (Hourly/Daily/Weekly)
+        if agg == "Hourly":
+            horizon = st.slider("Horizon prediksi (periode ke depan)", min_value=6, max_value=168, value=24, step=6, help="Jumlah periode (jam) ke depan untuk diprediksi")
+        elif agg == "Daily":
+            horizon = st.slider("Horizon prediksi (hari ke depan)", min_value=1, max_value=30, value=7, step=1, help="Jumlah hari ke depan")
+        else:  # Weekly
+            horizon = st.slider("Horizon prediksi (minggu ke depan)", min_value=1, max_value=12, value=4, step=1, help="Jumlah minggu ke depan")
     with col2:
         model_type = st.selectbox(
             "Pilih Model ML", 
@@ -1444,9 +1482,9 @@ with tab_fcst:
     
     # Prepare base data
     base_cols = ["timestamp","system_production","radiation","sunshine","air_temperature","hour_sin","hour_cos","dayofweek"]
-    # Gunakan data yang sudah DIFILTER rentang tanggal (dff), bukan keseluruhan df
-    base_cols = [c for c in base_cols if c in dff.columns]
-    base_df = dff[base_cols].copy()
+    # Gunakan data TERAGREGASI (dff_agg) agar sesuai pilihan agregasi
+    base_cols = [c for c in base_cols if c in dff_agg.columns]
+    base_df = dff_agg[base_cols].copy()
     if base_df.empty or base_df["system_production"].dropna().empty:
         st.warning("Data pada rentang tanggal terpilih kosong atau tanpa produksi. Persempit / ubah rentang tanggal.")
         st.stop()
